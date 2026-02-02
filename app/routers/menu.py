@@ -1,0 +1,312 @@
+from __future__ import annotations
+
+import asyncio
+
+from aiogram import F, Router
+from aiogram.types import CallbackQuery
+
+import aiosqlite
+
+from ..keyboards import kb_back_to_menu, kb_menu, kb_task_sponsors_list
+from ..repo import (
+    add_attempts,
+    add_inventory_item,
+    get_active_task_sponsors,
+    get_ui_state,
+    get_unrewarded_task_sponsors,
+    is_user_banned,
+    mark_sponsor_bonus_granted,
+)
+from ..ui import edit_or_recreate
+
+router = Router(name="menu")
+
+
+@router.callback_query(F.data == "menu:home")
+async def menu_home(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
+    if not cb.from_user:
+        return
+    await cb.answer()
+
+    # Бан пользователя
+    if await is_user_banned(conn, cb.from_user.id):
+        await bot.send_message(
+            chat_id=cb.from_user.id,
+            text="⛔ Доступ к боту для вас ограничен. Обратитесь к администратору.",
+        )
+        return
+    from ..repo import get_user_attempts
+
+    # Если пользователь вышел в меню из игры и у него были незабранные выигрыши,
+    # но игра ещё не закончилась поражением, автоматически забираем эти подарки.
+    state = await get_ui_state(conn, cb.from_user.id)
+    if state and state["screen"] == "game:play" and state["payload_json"]:
+        import json
+
+        try:
+            payload = json.loads(state["payload_json"])
+            pending = payload.get("pending_wins") or []
+            finished = payload.get("finished", False)
+        except Exception:
+            pending = []
+            finished = False
+
+        if pending and not finished:
+            for w in pending:
+                gift_id = int(w["gift_id"])
+                await add_inventory_item(conn, cb.from_user.id, gift_id)
+            # очищаем pending_wins и помечаем игру завершённой
+            payload["pending_wins"] = []
+            payload["finished"] = True
+            from ..repo import set_ui_state
+
+            await set_ui_state(
+                conn,
+                cb.from_user.id,
+                state["chat_id"],
+                state["message_id"],
+                "game:play",
+                payload,
+            )
+
+    attempts = await get_user_attempts(conn, cb.from_user.id)
+    text = (
+        f"🎮 Попыток: <b>{attempts}</b>\n\n"
+        "Как получить попытки:\n"
+        "• 🎯 Задания — +1 за каждое\n"
+        "• 🛒 Покупка — 5✨ = 1 попытка\n"
+        "• 🤝 Пригласить друга — +4 за каждого\n\n"
+        "Выберите действие ниже 👇"
+    )
+    await edit_or_recreate(
+        bot=bot,
+        conn=conn,
+        user_id=cb.from_user.id,
+        chat_id=cb.message.chat.id,
+        text=text,
+        reply_markup=kb_menu(),
+        screen="menu:home",
+        payload=None,
+    )
+
+
+@router.callback_query(F.data == "menu:tasks")
+async def menu_tasks(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
+    if not cb.from_user:
+        return
+    await cb.answer()
+
+    if await is_user_banned(conn, cb.from_user.id):
+        await bot.send_message(
+            chat_id=cb.from_user.id,
+            text="⛔ Доступ к боту для вас ограничен. Обратитесь к администратору.",
+        )
+        return
+    # экрана "минутку, собираем задания..."
+    await edit_or_recreate(
+        bot=bot,
+        conn=conn,
+        user_id=cb.from_user.id,
+        chat_id=cb.message.chat.id,
+        text="Минутку, собираем вам задания...",
+        reply_markup=None,
+        screen="tasks:loading",
+        payload=None,
+    )
+    await asyncio.sleep(1.5)
+
+    sponsors = await get_active_task_sponsors(conn)
+    if not sponsors:
+        text = (
+            "Не смог найти для вас предложения.\n\n"
+            "Загляните попозже, я подготовлю для вас задания."
+        )
+        await edit_or_recreate(
+            bot=bot,
+            conn=conn,
+            user_id=cb.from_user.id,
+            chat_id=cb.message.chat.id,
+            text=text,
+            reply_markup=kb_back_to_menu(),
+            screen="tasks:none",
+            payload=None,
+        )
+        return
+
+    from ..routers.start import sponsor_link
+
+    # Строим список для отображения: показываем все (каналы, боты, сайты),
+    # но если нет ни одного канала — не показываем сайты/боты вообще.
+    has_channels = any(
+        ((s["type"] or "channel").lower() if "type" in s.keys() else "channel") == "channel"
+        and int(s["channel_id"]) != 0
+        for s in sponsors
+    )
+    rows = []
+    for s in sponsors:
+        type_ = (s["type"] or "channel").lower() if "type" in s.keys() else "channel"
+        if type_ in ("bot", "link") and not has_channels:
+            continue
+        rows.append(
+            {
+                "title": str(s["title"]),
+                "link": sponsor_link(s) or "",
+            }
+        )
+
+    text = "Для вас задания:\n\nПодпишитесь на каналы ниже, чтобы получить попытки."
+    await edit_or_recreate(
+        bot=bot,
+        conn=conn,
+        user_id=cb.from_user.id,
+        chat_id=cb.message.chat.id,
+        text=text,
+        reply_markup=kb_task_sponsors_list(rows) if rows else kb_back_to_menu(),
+        screen="tasks:list",
+        payload=None,
+    )
+
+
+@router.callback_query(F.data == "tasks:check_subs")
+async def tasks_check_subs(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
+    from ..routers.start import sponsor_link, is_subscribed
+
+    if not cb.from_user:
+        return
+    await cb.answer()
+
+    # Загружаем все активные спонсоры-задания
+    sponsors = await get_active_task_sponsors(conn)
+    if not sponsors:
+        await bot.send_message(
+            chat_id=cb.from_user.id,
+            text="Сейчас для вас нет активных заданий.",
+        )
+        return
+
+    # Проверяем подписку только по каналам
+    missing_channels = []
+    for s in sponsors:
+        type_ = (s["type"] or "channel").lower() if "type" in s.keys() else "channel"
+        channel_id = int(s["channel_id"])
+        if type_ == "channel" and channel_id != 0:
+            ok = await is_subscribed(bot, cb.from_user.id, channel_id)
+            if not ok:
+                missing_channels.append(s)
+
+    has_channels = any(
+        ((s["type"] or "channel").lower() if "type" in s.keys() else "channel") == "channel"
+        and int(s["channel_id"]) != 0
+        for s in sponsors
+    )
+
+    # Перестраиваем список показа (как в menu_tasks)
+    rows = []
+    for s in sponsors:
+        type_ = (s["type"] or "channel").lower() if "type" in s.keys() else "channel"
+        if type_ in ("bot", "link") and not has_channels:
+            continue
+        rows.append(
+            {
+                "title": str(s["title"]),
+                "link": sponsor_link(s) or "",
+            }
+        )
+
+    if missing_channels:
+        text = "❌ Не на все каналы есть подписка.\n\nПодпишитесь на все каналы и проверьте ещё раз."
+        await edit_or_recreate(
+            bot=bot,
+            conn=conn,
+            user_id=cb.from_user.id,
+            chat_id=cb.message.chat.id,
+            text=text,
+            reply_markup=kb_task_sponsors_list(rows) if rows else kb_back_to_menu(),
+            screen="tasks:list",
+            payload=None,
+        )
+        return
+
+    # Все каналы выполнены — считаем бонусы по ещё не выданным спонсорам
+    unrewarded = await get_unrewarded_task_sponsors(conn, cb.from_user.id)
+    total_bonus = 0
+    for s in unrewarded:
+        bonus = int(s["bonus_attempts"])
+        total_bonus += bonus
+        await mark_sponsor_bonus_granted(conn, cb.from_user.id, int(s["id"]), bonus)
+
+    if total_bonus > 0:
+        await add_attempts(conn, cb.from_user.id, total_bonus)
+        text = (
+            f"✅ Задания выполнены! Вы получили <b>{total_bonus}</b> попыток.\n\n"
+            "Чтобы получить новые задания, дождитесь появления новых спонсоров."
+        )
+    else:
+        text = (
+            "✅ На данный момент все задания уже были выполнены.\n\n"
+            "Новые задания появятся, когда добавятся новые спонсоры."
+        )
+
+    await edit_or_recreate(
+        bot=bot,
+        conn=conn,
+        user_id=cb.from_user.id,
+        chat_id=cb.message.chat.id,
+        text=text,
+        reply_markup=kb_back_to_menu(),
+        screen="tasks:done",
+        payload=None,
+    )
+
+
+@router.callback_query(F.data == "menu:buy1_stub")
+async def menu_buy1(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
+    if not cb.from_user:
+        return
+    await cb.answer()
+    await edit_or_recreate(
+        bot=bot,
+        conn=conn,
+        user_id=cb.from_user.id,
+        chat_id=cb.message.chat.id,
+        text="Покупка 1 попытки: скоро будет подключение оплаты (заглушка).",
+        reply_markup=kb_back_to_menu(),
+        screen="buy:1",
+        payload=None,
+    )
+
+
+@router.callback_query(F.data == "menu:buy10_stub")
+async def menu_buy10(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
+    if not cb.from_user:
+        return
+    await cb.answer()
+    await edit_or_recreate(
+        bot=bot,
+        conn=conn,
+        user_id=cb.from_user.id,
+        chat_id=cb.message.chat.id,
+        text="Покупка 10 попыток: скоро будет подключение оплаты (заглушка).",
+        reply_markup=kb_back_to_menu(),
+        screen="buy:10",
+        payload=None,
+    )
+
+
+@router.callback_query(F.data == "menu:refs_stub")
+async def menu_refs(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
+    if not cb.from_user:
+        return
+    await cb.answer()
+    await edit_or_recreate(
+        bot=bot,
+        conn=conn,
+        user_id=cb.from_user.id,
+        chat_id=cb.message.chat.id,
+        text="Рефералы: скоро будет система рефералов (заглушка).",
+        reply_markup=kb_back_to_menu(),
+        screen="refs:stub",
+        payload=None,
+    )
+
+
