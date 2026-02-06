@@ -1,0 +1,9 @@
+# SQLite
+*.sqlite3
+*.sqlite
+*.db
+
+# Example files
+example.*
+example/
+*.example
