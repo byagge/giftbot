@@ -11,6 +11,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from .config import load_config
 from .db import connect, init_db
 from .middlewares.user_message_cleanup import UserMessageCleanupMiddleware
+from .middlewares.activity import ActivityMiddleware
+from .reminders import run_reminders_loop
 from .routers.admin import router as admin_router
 from .routers.game import router as game_router
 from .routers.menu import router as menu_router
@@ -42,12 +44,18 @@ async def _run() -> None:
 
     # Оставляем только первое /start от пользователя, все остальные его сообщения чистим.
     dp.message.middleware(UserMessageCleanupMiddleware())
+    # Отслеживаем активность пользователей для системы напоминаний
+    dp.message.middleware(ActivityMiddleware())
+    dp.callback_query.middleware(ActivityMiddleware())
 
     dp.include_router(start_router)
     dp.include_router(menu_router)
     dp.include_router(game_router)
     dp.include_router(profile_router)
     dp.include_router(admin_router)
+
+    # Запускаем фоновый цикл напоминаний
+    asyncio.create_task(run_reminders_loop(bot, conn))
 
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, conn=conn, config=cfg)

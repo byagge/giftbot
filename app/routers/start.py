@@ -16,6 +16,7 @@ from ..repo import (
     get_user,
     is_user_banned,
     set_start_message_id,
+    touch_user_activity,
     upsert_user,
 )
 from ..ui import edit_or_recreate
@@ -70,6 +71,9 @@ async def cmd_start(message: Message, bot: Bot, conn: aiosqlite.Connection) -> N
     if await is_user_banned(conn, u.id):
         await message.answer("⛔ Доступ к боту для вас ограничен. Обратитесь к администратору.")
         return
+
+    # Зафиксировать активность (для напоминаний) сразу после регистрации/старта
+    await touch_user_activity(conn, u.id)
 
     # Зафиксировать первое /start как "главное" пользовательское сообщение
     start_msg_id = await get_start_message_id(conn, u.id)

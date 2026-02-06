@@ -21,7 +21,7 @@ def kb_menu() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🎮 Играть", callback_data="menu:play")
     b.button(text="🎯 Задания", callback_data="menu:tasks")
-    b.button(text="🛒 Покупка", callback_data="menu:buy1_stub")
+    b.button(text="🛒 Покупка", callback_data="menu:buy1")
     b.button(text="🤝 Пригласить друга", callback_data="menu:refs_stub")
     b.button(text="👤 Профиль", callback_data="menu:profile")
     b.adjust(2, 1, 1, 1, 1)
@@ -101,9 +101,11 @@ def kb_admin_menu() -> InlineKeyboardMarkup:
     # Пользователи
     b.button(text="👥 Пользователи", callback_data="admin:list_users")
     # Настройки / статистика
+    b.button(text="📨 Рассылка", callback_data="admin:broadcast")
+    b.button(text="⭐ Цена попытки (Stars)", callback_data="admin:set_stars_price")
     b.button(text="📊 Статистика", callback_data="admin:stats")
     b.button(text="⚙️ Шанс подарка (глоб.)", callback_data="admin:set_global_chance")
-    b.adjust(1, 1, 1, 1, 2)
+    b.adjust(1, 1, 1, 1, 1, 2)
     return b.as_markup()
 
 

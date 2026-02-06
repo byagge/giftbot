@@ -123,6 +123,16 @@ async def init_db(conn: aiosqlite.Connection) -> None:
           key               TEXT PRIMARY KEY,
           value             TEXT NOT NULL
         );
+
+        -- User reminders (follow-up / inactivity notifications)
+        CREATE TABLE IF NOT EXISTS user_reminders (
+          user_id           INTEGER PRIMARY KEY,
+          last_activity_ts  INTEGER NOT NULL,
+          next_reminder_ts  INTEGER,
+          stage             INTEGER NOT NULL DEFAULT 0,
+          first_sequence_done INTEGER NOT NULL DEFAULT 0,
+          FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        );
         """
     )
 
@@ -154,6 +164,9 @@ async def init_db(conn: aiosqlite.Connection) -> None:
     # Default settings
     await conn.execute(
         "INSERT OR IGNORE INTO settings(key, value) VALUES('game_cell_gift_chance', '0.10');"
+    )
+    await conn.execute(
+        "INSERT OR IGNORE INTO settings(key, value) VALUES('stars_price_per_attempt', '1');"
     )
     await conn.commit()
 

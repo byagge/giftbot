@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from aiogram import F, Router
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery
 
 import aiosqlite
 
@@ -12,10 +12,12 @@ from ..repo import (
     add_attempts,
     add_inventory_item,
     get_active_task_sponsors,
+    get_setting_int,
     get_ui_state,
     get_unrewarded_task_sponsors,
     is_user_banned,
     mark_sponsor_bonus_granted,
+    set_ui_state,
 )
 from ..ui import edit_or_recreate
 
@@ -259,37 +261,117 @@ async def tasks_check_subs(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -
     )
 
 
-@router.callback_query(F.data == "menu:buy1_stub")
+@router.callback_query(F.data == "menu:buy1")
 async def menu_buy1(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
     if not cb.from_user:
         return
     await cb.answer()
-    await edit_or_recreate(
-        bot=bot,
-        conn=conn,
-        user_id=cb.from_user.id,
-        chat_id=cb.message.chat.id,
-        text="Покупка 1 попытки: скоро будет подключение оплаты (заглушка).",
-        reply_markup=kb_back_to_menu(),
-        screen="buy:1",
-        payload=None,
+
+    if await is_user_banned(conn, cb.from_user.id):
+        await bot.send_message(
+            chat_id=cb.from_user.id,
+            text="⛔ Доступ к боту для вас ограничен. Обратитесь к администратору.",
+        )
+        return
+
+    # Цена в звёздах (Telegram Stars), задаётся в админке, по умолчанию 1
+    price_stars = await get_setting_int(conn, "stars_price_per_attempt", 1)
+
+    text = (
+        f"🛒 <b>Покупка попытки</b>\n\n"
+        f"Стоимость: <b>{price_stars}⭐</b>\n\n"
+        "После оплаты попытка будет автоматически начислена на ваш счёт."
+    )
+    await bot.send_invoice(
+        chat_id=cb.from_user.id,
+        title="Paul Du Rove - попытка",
+        description="Купите попытку и выиграйте подарки!",
+        payload="buy_attempt_1",
+        provider_token="",  # для Telegram Stars провайдер не требуется
+        currency="XTR",
+        prices=[LabeledPrice(label="1 попытка", amount=price_stars)],
+        max_tip_amount=0,
+        send_email_to_provider=False,
+        disable_notification=False,
     )
 
 
-@router.callback_query(F.data == "menu:buy10_stub")
-async def menu_buy10(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
+@router.pre_checkout_query()
+async def pre_checkout(pre_checkout_query: PreCheckoutQuery, bot, conn: aiosqlite.Connection) -> None:
+    # Здесь можно добавить дополнительные проверки, если нужно
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+
+@router.message(F.successful_payment)
+async def successful_payment_handler(message: Message, bot, conn: aiosqlite.Connection) -> None:
+    sp = message.successful_payment
+    if not sp:
+        return
+    if sp.currency != "XTR":
+        return
+
+    user = message.from_user
+    if not user:
+        return
+
+    # Сейчас у нас только один тип покупки — 1 попытка
+    if sp.invoice_payload == "buy_attempt_1":
+        await add_attempts(conn, user.id, 1)
+        # Кнопка "Меню" после оплаты должна создавать новое сообщение меню,
+        # не редактируя старое, поэтому используем отдельный callback.
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⟵ Меню", callback_data="menu:home_new")]
+            ]
+        )
+        await message.answer(
+            "✅ Оплата успешно завершена!\n\n"
+            "Вам начислена <b>1 попытка</b>. Удачной игры! 🎮",
+            reply_markup=markup,
+        )
+
+
+@router.callback_query(F.data == "menu:home_new")
+async def menu_home_new(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
+    """
+    Специальный «Меню» после оплаты: не редактирует старое сообщение,
+    а создаёт новое и переносит на него single-message UI.
+    """
     if not cb.from_user:
         return
     await cb.answer()
-    await edit_or_recreate(
-        bot=bot,
-        conn=conn,
-        user_id=cb.from_user.id,
+
+    if await is_user_banned(conn, cb.from_user.id):
+        await bot.send_message(
+            chat_id=cb.from_user.id,
+            text="⛔ Доступ к боту для вас ограничен. Обратитесь к администратору.",
+        )
+        return
+
+    from ..repo import get_user_attempts
+
+    attempts = await get_user_attempts(conn, cb.from_user.id)
+    text = (
+        f"🎮 Попыток: <b>{attempts}</b>\n\n"
+        "Как получить попытки:\n"
+        "• 🎯 Задания — +1 за каждое\n"
+        "• 🛒 Покупка — 5✨ = 1 попытка\n"
+        "• 🤝 Пригласить друга — +4 за каждого\n\n"
+        "Выберите действие ниже 👇"
+    )
+    msg = await bot.send_message(
         chat_id=cb.message.chat.id,
-        text="Покупка 10 попыток: скоро будет подключение оплаты (заглушка).",
-        reply_markup=kb_back_to_menu(),
-        screen="buy:10",
-        payload=None,
+        text=text,
+        reply_markup=kb_menu(),
+    )
+    # Переносим single-message UI на новое сообщение
+    await set_ui_state(
+        conn,
+        cb.from_user.id,
+        cb.message.chat.id,
+        msg.message_id,
+        "menu:home",
+        None,
     )
 
 
@@ -303,7 +385,7 @@ async def menu_refs(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
         conn=conn,
         user_id=cb.from_user.id,
         chat_id=cb.message.chat.id,
-        text="Рефералы: скоро будет система рефералов (заглушка).",
+        text="Реферальная система скоро появится... 🔄",
         reply_markup=kb_back_to_menu(),
         screen="refs:stub",
         payload=None,

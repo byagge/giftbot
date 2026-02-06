@@ -106,6 +106,17 @@ async def get_setting_float(conn: aiosqlite.Connection, key: str, default: float
         return default
 
 
+async def get_setting_int(conn: aiosqlite.Connection, key: str, default: int) -> int:
+    cur = await conn.execute("SELECT value FROM settings WHERE key=?", (key,))
+    row = await cur.fetchone()
+    if not row:
+        return default
+    try:
+        return int(row["value"])
+    except Exception:
+        return default
+
+
 async def set_setting(conn: aiosqlite.Connection, key: str, value: str) -> None:
     await conn.execute(
         "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -385,6 +396,123 @@ async def update_gift(
 
 async def delete_gift(conn: aiosqlite.Connection, gift_id: int) -> None:
     await conn.execute("DELETE FROM gifts WHERE id=?", (gift_id,))
+    await conn.commit()
+
+
+# ---- Reminders / follow-ups ----
+
+# Задержки между напоминаниями для стадий 0..7 (секунды)
+REMINDER_STAGE_DELAYS: list[int] = [
+    10 * 60,      # 10 минут
+    30 * 60,      # 30 минут
+    3 * 60 * 60,  # 3 часа
+    12 * 60 * 60, # 12 часов
+    24 * 60 * 60, # 24 часа
+    48 * 60 * 60, # 48 часов
+    72 * 60 * 60, # 72 часа
+    72 * 60 * 60, # далее каждые 72 часа
+]
+
+
+def _reminder_delay_for_stage(stage: int, first_sequence_done: bool) -> int:
+    """Возвращает задержку до следующего напоминания для заданной стадии."""
+    if first_sequence_done:
+        # после прохождения первой последовательности — каждые 72 часа
+        return 72 * 60 * 60
+    if stage < 0:
+        stage = 0
+    if stage >= len(REMINDER_STAGE_DELAYS):
+        stage = len(REMINDER_STAGE_DELAYS) - 1
+    return REMINDER_STAGE_DELAYS[stage]
+
+
+async def touch_user_activity(conn: aiosqlite.Connection, user_id: int) -> None:
+    """
+    Обновляет last_activity_ts пользователя и пересчитывает next_reminder_ts.
+    Вызывается при любом взаимодействии с ботом.
+    """
+    now = now_ts()
+    # если пользователя ещё нет в таблице users (новый /start до upsert_user) — ничего не делаем
+    cur = await conn.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,))
+    if not await cur.fetchone():
+        return
+    cur = await conn.execute(
+        "SELECT stage, first_sequence_done FROM user_reminders WHERE user_id=?",
+        (user_id,),
+    )
+    row = await cur.fetchone()
+    if not row:
+        stage = 0
+        first_done = False
+    else:
+        stage = int(row["stage"])
+        first_done = bool(row["first_sequence_done"])
+    delay = _reminder_delay_for_stage(stage, first_done)
+    next_ts = now + delay
+    await conn.execute(
+        """
+        INSERT INTO user_reminders(user_id, last_activity_ts, next_reminder_ts, stage, first_sequence_done)
+        VALUES(?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          last_activity_ts=excluded.last_activity_ts,
+          next_reminder_ts=excluded.next_reminder_ts
+        """,
+        (user_id, now, next_ts, stage, 1 if first_done else 0),
+    )
+    await conn.commit()
+
+
+async def get_due_reminders(conn: aiosqlite.Connection, now_time: int) -> list[aiosqlite.Row]:
+    """
+    Возвращает пользователей, для которых пора отправить напоминание.
+    """
+    cur = await conn.execute(
+        """
+        SELECT ur.*, u.username, u.first_name, u.is_banned
+        FROM user_reminders ur
+        JOIN users u ON u.user_id = ur.user_id
+        WHERE ur.next_reminder_ts IS NOT NULL
+          AND ur.next_reminder_ts <= ?
+        """,
+        (now_time,),
+    )
+    return list(await cur.fetchall())
+
+
+async def advance_reminder_stage(conn: aiosqlite.Connection, user_id: int, current_stage: int, first_sequence_done: bool) -> None:
+    """
+    Переводит пользователя на следующую стадию напоминаний и выставляет next_reminder_ts.
+    """
+    now = now_ts()
+    stage = current_stage
+    first_done = first_sequence_done
+
+    if not first_done:
+        if stage < 7:
+            stage += 1
+        if stage >= 7:
+            first_done = True
+
+    delay = _reminder_delay_for_stage(stage, first_done)
+    next_ts = now + delay
+
+    await conn.execute(
+        """
+        UPDATE user_reminders
+        SET stage=?, first_sequence_done=?, next_reminder_ts=?, last_activity_ts=last_activity_ts
+        WHERE user_id=?
+        """,
+        (stage, 1 if first_done else 0, next_ts, user_id),
+    )
+    await conn.commit()
+
+
+async def stop_reminders(conn: aiosqlite.Connection, user_id: int) -> None:
+    """Отключает напоминания пользователю (например, если он выиграл подарок)."""
+    await conn.execute(
+        "UPDATE user_reminders SET next_reminder_ts=NULL, first_sequence_done=1 WHERE user_id=?",
+        (user_id,),
+    )
     await conn.commit()
 
 

@@ -44,6 +44,8 @@ class AdminFlow(StatesGroup):
     edit_task_sponsor = State()
     edit_gift = State()
     edit_user = State()
+    broadcast = State()
+    set_stars_price = State()
 
 
 def _is_admin(cfg: Config, user_id: int) -> bool:
@@ -88,6 +90,29 @@ async def admin_menu_cb(cb: CallbackQuery, bot, conn: aiosqlite.Connection, conf
         text="Админ-панель:",
         reply_markup=kb_admin_menu(),
         screen="admin:menu",
+        payload=None,
+    )
+
+
+@router.callback_query(F.data == "admin:broadcast")
+async def admin_broadcast(cb: CallbackQuery, bot, conn: aiosqlite.Connection, config: Config, state: FSMContext) -> None:
+    if not cb.from_user or not cb.message or not _is_admin(config, cb.from_user.id):
+        return
+    await cb.answer()
+    await state.set_state(AdminFlow.broadcast)
+    await edit_or_recreate(
+        bot=bot,
+        conn=conn,
+        user_id=cb.from_user.id,
+        chat_id=cb.message.chat.id,
+        text=(
+            "📨 <b>Рассылка</b>\n\n"
+            "Отправь текст сообщения, которое будет разослано <b>всем пользователям</b>.\n"
+            "Можно использовать HTML-разметку.\n\n"
+            "Внимание: рассылка может занять некоторое время."
+        ),
+        reply_markup=kb_admin_back(),
+        screen="admin:broadcast",
         payload=None,
     )
 
@@ -630,6 +655,53 @@ async def admin_set_global_chance_msg(message: Message, conn: aiosqlite.Connecti
     await state.clear()
     await message.answer(
         f"✅ Установлено: {v:.2%}. Открой /admin для продолжения.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="✖ Закрыть", callback_data="admin:close_notice")]
+            ]
+        ),
+    )
+
+
+@router.callback_query(F.data == "admin:set_stars_price")
+async def admin_set_stars_price(cb: CallbackQuery, bot, conn: aiosqlite.Connection, config: Config, state: FSMContext) -> None:
+    if not cb.from_user or not cb.message or not _is_admin(config, cb.from_user.id):
+        return
+    await cb.answer()
+    await state.set_state(AdminFlow.set_stars_price)
+    await edit_or_recreate(
+        bot=bot,
+        conn=conn,
+        user_id=cb.from_user.id,
+        chat_id=cb.message.chat.id,
+        text=(
+            "⭐ <b>Цена попытки в Telegram Stars</b>\n\n"
+            "Отправь целое число — сколько звёзд нужно за 1 попытку.\n\n"
+            "Например:\n<code>1</code> или <code>5</code>"
+        ),
+        reply_markup=kb_admin_back(),
+        screen="admin:set_stars_price",
+        payload=None,
+    )
+
+
+@router.message(AdminFlow.set_stars_price)
+async def admin_set_stars_price_msg(message: Message, conn: aiosqlite.Connection, config: Config, state: FSMContext) -> None:
+    if not message.from_user or not _is_admin(config, message.from_user.id):
+        return
+    txt = (message.text or "").strip()
+    try:
+        v = int(txt)
+    except Exception:
+        await message.answer("Нужно целое число >= 1 (количество звёзд).")
+        return
+    if v < 1:
+        await message.answer("Число должно быть не меньше 1.")
+        return
+    await set_setting(conn, "stars_price_per_attempt", str(v))
+    await state.clear()
+    await message.answer(
+        f"✅ Цена попытки установлена: <b>{v}⭐</b>.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="✖ Закрыть", callback_data="admin:close_notice")]
@@ -1207,6 +1279,54 @@ async def admin_edit_user_msg(message: Message, conn: aiosqlite.Connection, conf
     await state.clear()
     await message.answer(
         "✅ Попытки обновлены. Открой /admin для продолжения.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="✖ Закрыть", callback_data="admin:close_notice")]
+            ]
+        ),
+    )
+
+
+@router.message(AdminFlow.broadcast)
+async def admin_broadcast_msg(message: Message, bot, conn: aiosqlite.Connection, config: Config, state: FSMContext) -> None:
+    if not message.from_user or not _is_admin(config, message.from_user.id):
+        return
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Текст рассылки не может быть пустым.")
+        return
+
+    # Получаем всех незабаненных пользователей
+    cur = await conn.execute(
+        "SELECT user_id FROM users WHERE is_banned=0 OR is_banned IS NULL"
+    )
+    rows = await cur.fetchall()
+    total = len(rows)
+    sent = 0
+
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✖ Закрыть", callback_data="admin:close_notice")]
+        ]
+    )
+
+    for r in rows:
+        uid = int(r["user_id"])
+        try:
+            await bot.send_message(
+                chat_id=uid,
+                text=text,
+                disable_web_page_preview=True,
+                reply_markup=markup,
+            )
+            sent += 1
+        except Exception:
+            # Игнорируем ошибки (бот заблокирован и т.п.)
+            continue
+
+    await state.clear()
+    await message.answer(
+        f"✅ Рассылка завершена. Успешно отправлено: <b>{sent}</b> из <b>{total}</b> пользователей.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="✖ Закрыть", callback_data="admin:close_notice")]
