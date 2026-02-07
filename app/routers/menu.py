@@ -26,7 +26,7 @@ router = Router(name="menu")
 
 @router.callback_query(F.data == "menu:home")
 async def menu_home(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
-    if not cb.from_user:
+    if not cb.from_user or not cb.message:
         return
     await cb.answer()
 
@@ -37,7 +37,7 @@ async def menu_home(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
             text="⛔ Доступ к боту для вас ограничен. Обратитесь к администратору.",
         )
         return
-    from ..repo import get_user_attempts
+    from ..repo import get_user_attempts, get_ui_state, set_ui_state
 
     # Если пользователь вышел в меню из игры и у него были незабранные выигрыши,
     # но игра ещё не закончилась поражением, автоматически забираем эти подарки.
@@ -60,7 +60,6 @@ async def menu_home(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
             # очищаем pending_wins и помечаем игру завершённой
             payload["pending_wins"] = []
             payload["finished"] = True
-            from ..repo import set_ui_state
 
             await set_ui_state(
                 conn,
@@ -80,16 +79,60 @@ async def menu_home(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
         "• 🤝 Пригласить друга — +4 за каждого\n\n"
         "Выберите действие ниже 👇"
     )
-    await edit_or_recreate(
-        bot=bot,
-        conn=conn,
-        user_id=cb.from_user.id,
-        chat_id=cb.message.chat.id,
-        text=text,
-        reply_markup=kb_menu(),
-        screen="menu:home",
-        payload=None,
-    )
+    
+    # Проверяем, пришел ли callback из уведомления (сообщение не совпадает с сохраненным в ui_state)
+    is_from_reminder = False
+    if state:
+        saved_chat_id = int(state.get("chat_id", 0))
+        saved_message_id = int(state.get("message_id", 0))
+        # Если chat_id или message_id не совпадают, значит это уведомление
+        if (cb.message.chat.id != saved_chat_id or 
+            cb.message.message_id != saved_message_id):
+            is_from_reminder = True
+    
+    if is_from_reminder:
+        # Если callback пришел из уведомления, редактируем само уведомление
+        try:
+            await bot.edit_message_text(
+                chat_id=cb.message.chat.id,
+                message_id=cb.message.message_id,
+                text=text,
+                reply_markup=kb_menu(),
+                disable_web_page_preview=True,
+            )
+            # Обновляем ui_state на это уведомление
+            await set_ui_state(
+                conn,
+                cb.from_user.id,
+                cb.message.chat.id,
+                cb.message.message_id,
+                "menu:home",
+                None,
+            )
+        except Exception:
+            # Если не удалось отредактировать (например, сообщение уже изменено), используем обычную логику
+            await edit_or_recreate(
+                bot=bot,
+                conn=conn,
+                user_id=cb.from_user.id,
+                chat_id=cb.message.chat.id,
+                text=text,
+                reply_markup=kb_menu(),
+                screen="menu:home",
+                payload=None,
+            )
+    else:
+        # Обычная логика для single-message navigation
+        await edit_or_recreate(
+            bot=bot,
+            conn=conn,
+            user_id=cb.from_user.id,
+            chat_id=cb.message.chat.id,
+            text=text,
+            reply_markup=kb_menu(),
+            screen="menu:home",
+            payload=None,
+        )
 
 
 @router.callback_query(F.data == "menu:tasks")

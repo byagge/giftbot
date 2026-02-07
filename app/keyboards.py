@@ -118,8 +118,9 @@ def kb_admin_back() -> InlineKeyboardMarkup:
 def kb_profile_menu() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🎁 Инвентарь", callback_data="profile:inventory")
+    b.row(InlineKeyboardButton(text="💬 Поддержка", url="https://t.me/DuRoveSupportBot"))
     b.button(text="⟵ Меню", callback_data="menu:home")
-    b.adjust(1, 1)
+    b.adjust(1, 1, 1)
     return b.as_markup()
 
 
