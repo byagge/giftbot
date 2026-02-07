@@ -26,6 +26,7 @@ from ..repo import (
     set_attempts,
     set_inventory_status,
     set_setting,
+    set_ui_state,
     set_user_ban,
     upsert_user,
 )
@@ -64,16 +65,14 @@ async def admin_cmd(message: Message, bot, conn: aiosqlite.Connection, config: C
         return
     await state.clear()
     await upsert_user(conn, message.from_user.id, message.from_user.username, message.from_user.first_name, message.from_user.last_name)
-    await edit_or_recreate(
-        bot=bot,
-        conn=conn,
-        user_id=message.from_user.id,
+    # Для команд всегда создаем новое сообщение
+    msg = await bot.send_message(
         chat_id=message.chat.id,
         text="Админ-панель:",
         reply_markup=kb_admin_menu(),
-        screen="admin:menu",
-        payload=None,
+        disable_web_page_preview=True,
     )
+    await set_ui_state(conn, message.from_user.id, message.chat.id, msg.message_id, "admin:menu", None)
 
 
 @router.callback_query(F.data == "admin:menu")

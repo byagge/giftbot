@@ -16,6 +16,7 @@ from ..repo import (
     get_user,
     is_user_banned,
     set_start_message_id,
+    set_ui_state,
     touch_user_activity,
     upsert_user,
 )
@@ -87,16 +88,14 @@ async def cmd_start(message: Message, bot: Bot, conn: aiosqlite.Connection) -> N
             f"{name}, поздравляю, ты выиграл подарок! 🎁\n\n"
             "Скорее жми на кнопку «🎁 Выбрать подарок» и получай какой захочешь!"
         )
-        await edit_or_recreate(
-            bot=bot,
-            conn=conn,
-            user_id=u.id,
+        # Для команд всегда создаем новое сообщение
+        msg = await bot.send_message(
             chat_id=message.chat.id,
             text=text,
             reply_markup=kb_start(),
-            screen="start:hello_new",
-            payload=None,
+            disable_web_page_preview=True,
         )
+        await set_ui_state(conn, u.id, message.chat.id, msg.message_id, "start:hello_new", None)
     else:
         # Уже есть в БД — сразу меню
         from ..repo import get_user_attempts
@@ -110,16 +109,14 @@ async def cmd_start(message: Message, bot: Bot, conn: aiosqlite.Connection) -> N
             "• 🤝 Пригласить друга — +4 за каждого\n\n"
             "Выберите действие ниже 👇"
         )
-        await edit_or_recreate(
-            bot=bot,
-            conn=conn,
-            user_id=u.id,
+        # Для команд всегда создаем новое сообщение
+        msg = await bot.send_message(
             chat_id=message.chat.id,
             text=text,
             reply_markup=kb_menu(),
-            screen="menu:home",
-            payload=None,
+            disable_web_page_preview=True,
         )
+        await set_ui_state(conn, u.id, message.chat.id, msg.message_id, "menu:home", None)
 
 
 @router.callback_query(F.data == "start:back")
