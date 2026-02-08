@@ -13,6 +13,7 @@ from .db import connect, init_db
 from .middlewares.user_message_cleanup import UserMessageCleanupMiddleware
 from .middlewares.activity import ActivityMiddleware
 from .middlewares.sponsor_check import SponsorCheckMiddleware
+from .middlewares.subscription_check import SubscriptionCheckMiddleware
 from .reminders import run_reminders_loop
 from .routers.admin import router as admin_router
 from .routers.game import router as game_router

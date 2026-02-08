@@ -83,10 +83,9 @@ async def menu_home(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -> None:
     # Проверяем, пришел ли callback из уведомления (сообщение не совпадает с сохраненным в ui_state)
     is_from_reminder = False
     if state:
-        saved_chat_id = int(state.get("chat_id", 0))
-        saved_message_id = int(state.get("message_id", 0))
+        saved_message_id = state.get("message_id")
         # Если chat_id или message_id не совпадают, значит это уведомление
-        if (cb.message.chat.id != saved_chat_id or 
+        if (cb.message.chat.id != state["chat_id"] or 
             cb.message.message_id != saved_message_id):
             is_from_reminder = True
     
