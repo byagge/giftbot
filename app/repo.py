@@ -516,3 +516,35 @@ async def stop_reminders(conn: aiosqlite.Connection, user_id: int) -> None:
     await conn.commit()
 
 
+# ---------- JOIN REQUESTS ----------
+# TTL для заявок: 24 часа
+REQUEST_TTL_SECONDS = 24 * 60 * 60
+
+
+async def save_join_request(conn: aiosqlite.Connection, user_id: int, chat_id: int) -> None:
+    """Сохраняет заявку на вступление в канал."""
+    ts = now_ts()
+    await conn.execute(
+        """
+        INSERT INTO join_requests(user_id, chat_id, ts) 
+        VALUES(?, ?, ?)
+        ON CONFLICT(user_id, chat_id) DO UPDATE SET ts=excluded.ts
+        """,
+        (user_id, chat_id, ts),
+    )
+    await conn.commit()
+
+
+async def has_fresh_join_request(conn: aiosqlite.Connection, user_id: int, chat_id: int) -> bool:
+    """Проверяет, есть ли свежая заявка на вступление (не старше REQUEST_TTL_SECONDS)."""
+    cur = await conn.execute(
+        "SELECT ts FROM join_requests WHERE user_id=? AND chat_id=?",
+        (user_id, chat_id),
+    )
+    row = await cur.fetchone()
+    if not row:
+        return False
+    ts = int(row["ts"])
+    return (now_ts() - ts) <= REQUEST_TTL_SECONDS
+
+

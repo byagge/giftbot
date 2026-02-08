@@ -12,6 +12,7 @@ from .config import load_config
 from .db import connect, init_db
 from .middlewares.user_message_cleanup import UserMessageCleanupMiddleware
 from .middlewares.activity import ActivityMiddleware
+from .middlewares.sponsor_check import SponsorCheckMiddleware
 from .reminders import run_reminders_loop
 from .routers.admin import router as admin_router
 from .routers.game import router as game_router
@@ -42,6 +43,9 @@ async def _run() -> None:
     dp["conn"] = conn
     dp["config"] = cfg
 
+    # Проверяем подписку на старт-спонсоры при любом взаимодействии (должен быть первым)
+    dp.message.middleware(SponsorCheckMiddleware())
+    dp.callback_query.middleware(SponsorCheckMiddleware())
     # Оставляем только первое /start от пользователя, все остальные его сообщения чистим.
     dp.message.middleware(UserMessageCleanupMiddleware())
     # Отслеживаем активность пользователей для системы напоминаний

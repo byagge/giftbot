@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from aiogram import Bot, F, Router
 from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, ChatJoinRequest
 
 import aiosqlite
 
@@ -14,7 +14,9 @@ from ..repo import (
     get_active_start_sponsors,
     get_start_message_id,
     get_user,
+    has_fresh_join_request,
     is_user_banned,
+    save_join_request,
     set_start_message_id,
     set_ui_state,
     touch_user_activity,
@@ -34,12 +36,33 @@ def sponsor_link(row: aiosqlite.Row) -> str | None:
     return None
 
 
-async def is_subscribed(bot: Bot, user_id: int, channel_id: int) -> bool:
+async def is_subscribed(bot: Bot, conn: aiosqlite.Connection, user_id: int, channel_id: int) -> bool:
+    """
+    Проверяет, подписан ли пользователь на канал или отправил заявку на приватный канал.
+    Сначала проверяет подписчиков через get_chat_member.
+    Если не подписан, проверяет заявки на вступление через БД (join_requests).
+    """
     try:
+        # Сначала проверяем, подписан ли пользователь
         member = await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
-        return member.status in ("creator", "administrator", "member")
-    except Exception:
+        status = member.status
+        
+        # Если пользователь подписан - это точно подписка
+        if status in ("creator", "administrator", "member"):
+            return True
+        
+        # Если не подписан, проверяем заявки на вступление через БД
+        # Заявки сохраняются обработчиком chat_join_request в реальном времени
+        if await has_fresh_join_request(conn, user_id, channel_id):
+            return True
+        
         return False
+    except Exception:
+        # Если ошибка при проверке, проверяем заявку в БД как fallback
+        try:
+            return await has_fresh_join_request(conn, user_id, channel_id)
+        except Exception:
+            return False
 
 
 async def ensure_start_sponsors_subscribed(bot: Bot, conn: aiosqlite.Connection, user_id: int) -> tuple[bool, list[aiosqlite.Row], list[aiosqlite.Row]]:
@@ -54,10 +77,47 @@ async def ensure_start_sponsors_subscribed(bot: Bot, conn: aiosqlite.Connection,
         channel_id = int(s["channel_id"])
         # Проверку подписки реально можно сделать только для каналов
         if type_ == "channel" and channel_id != 0:
-            ok = await is_subscribed(bot, user_id, channel_id)
+            ok = await is_subscribed(bot, conn, user_id, channel_id)
             if not ok:
                 missing_channels.append(s)
     return (len(missing_channels) == 0), sponsors, missing_channels
+
+
+@router.chat_join_request()
+async def on_join_request(event: ChatJoinRequest, bot: Bot, conn: aiosqlite.Connection) -> None:
+    """
+    Обработчик заявок на вступление в каналы.
+    Сохраняет заявку в БД для последующей проверки подписки.
+    Обрабатывает заявки только для старт-спонсоров.
+    """
+    if not event.from_user:
+        return
+    
+    user_id = event.from_user.id
+    chat_id = event.chat.id
+    
+    # Проверяем, является ли этот канал старт-спонсором
+    sponsors = await get_active_start_sponsors(conn)
+    is_start_sponsor = False
+    for s in sponsors:
+        type_ = (s["type"] or "channel").lower() if "type" in s.keys() else "channel"
+        channel_id = int(s["channel_id"])
+        if type_ == "channel" and channel_id == chat_id:
+            is_start_sponsor = True
+            break
+    
+    # Сохраняем заявку только если это старт-спонсор
+    if is_start_sponsor:
+        await save_join_request(conn, user_id, chat_id)
+        
+        # Можно уведомить пользователя (если бот уже имеет право писать ему)
+        # Обычно юзер не начинал диалог -> сообщение может не уйти. Это нормально.
+        try:
+            pass
+        except Exception:
+            pass
+    
+    # ВАЖНО: мы НЕ принимаем и НЕ отклоняем заявку автоматически
 
 
 @router.message(CommandStart())

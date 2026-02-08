@@ -133,6 +133,14 @@ async def init_db(conn: aiosqlite.Connection) -> None:
           first_sequence_done INTEGER NOT NULL DEFAULT 0,
           FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         );
+
+        -- Join requests tracking (for private channels)
+        CREATE TABLE IF NOT EXISTS join_requests (
+          user_id           INTEGER NOT NULL,
+          chat_id           INTEGER NOT NULL,
+          ts                INTEGER NOT NULL,
+          PRIMARY KEY(user_id, chat_id)
+        );
         """
     )
 

@@ -235,7 +235,7 @@ async def tasks_check_subs(cb: CallbackQuery, bot, conn: aiosqlite.Connection) -
         type_ = (s["type"] or "channel").lower() if "type" in s.keys() else "channel"
         channel_id = int(s["channel_id"])
         if type_ == "channel" and channel_id != 0:
-            ok = await is_subscribed(bot, cb.from_user.id, channel_id)
+            ok = await is_subscribed(bot, conn, cb.from_user.id, channel_id)
             if not ok:
                 missing_channels.append(s)
 
